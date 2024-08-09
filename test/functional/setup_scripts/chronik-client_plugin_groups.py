@@ -2,11 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
-Test Chronik's /plugin/:plugin_name/groups endpoints.
+Test chronik-client delivery of Chronik /plugin/:plugin_name/groups endpoints.
+
+Based on test/functional/chronik_plugin_groups.py
 """
 
 import os
 
+import pathmagic  # noqa
+from setup_framework import SetupFramework
 from test_framework.address import (
     ADDRESS_ECREG_P2SH_OP_TRUE,
     ADDRESS_ECREG_UNSPENDABLE,
@@ -22,12 +26,11 @@ from test_framework.blocktools import (
 from test_framework.messages import COutPoint, CTransaction, CTxIn, CTxOut
 from test_framework.p2p import P2PDataStore
 from test_framework.script import OP_RETURN, CScript
-from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import assert_equal
 
 
-class ChronikPluginGroups(BitcoinTestFramework):
+class ChronikClientPluginGroups(SetupFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 1
@@ -40,6 +43,8 @@ class ChronikPluginGroups(BitcoinTestFramework):
         from test_framework.chronik.client import pb
 
         node = self.nodes[0]
+        yield True
+
         chronik = node.get_chronik_client()
 
         # Without a plugins.toml, setting up a plugin context is skipped
@@ -89,11 +94,6 @@ class MyPluginPlugin(Plugin):
             self.restart_node(0, ["-chronik", "-chronikreindex"])
         peer = node.add_p2p_connection(P2PDataStore())
 
-        assert_equal(
-            chronik.plugin("doesntexist").groups().err(404).msg,
-            '404: Plugin "doesntexist" not loaded',
-        )
-
         plugin = chronik.plugin("my_plugin")
         assert_equal(
             plugin.groups(page_size=51).err(400).msg,
@@ -116,6 +116,11 @@ class MyPluginPlugin(Plugin):
         coinblockhash = self.generatetoaddress(node, 1, ADDRESS_ECREG_P2SH_OP_TRUE)[0]
         coinblock = node.getblock(coinblockhash)
         cointx = coinblock["tx"][0]
+
+        self.log.info("Step 1: Empty regtest chain")
+        yield True
+
+        self.log.info("Step 2: Send a tx to create plugin utxos in multiple groups")
 
         block_hashes = self.generatetoaddress(
             node, COINBASE_MATURITY, ADDRESS_ECREG_UNSPENDABLE
@@ -176,6 +181,10 @@ class MyPluginPlugin(Plugin):
             make_groups([b"aab"], next_start=b"abb"),
         )
 
+        yield True
+
+        self.log.info("Step 3: Send a tx to create plugin utxos in different groups")
+
         tx2 = CTransaction()
         tx2.vin = [CTxIn(COutPoint(tx1.sha256, 5), SCRIPTSIG_OP_TRUE)]
         tx2.vout = [
@@ -193,6 +202,10 @@ class MyPluginPlugin(Plugin):
             make_groups([b"aaa", b"aab", b"aba", b"abb", b"baa", b"bbb"]),
         )
 
+        yield True
+
+        self.log.info("Step 4: Mine the first two txs")
+
         # Mine tx1 and tx2
         block1 = self.generatetoaddress(node, 1, ADDRESS_ECREG_UNSPENDABLE)[-1]
 
@@ -204,6 +217,10 @@ class MyPluginPlugin(Plugin):
             plugin.groups(prefix=b"b").ok(),
             make_groups([b"baa", b"bbb"]),
         )
+
+        yield True
+
+        self.log.info("Step 5: Send a third tx with another group")
 
         tx3 = CTransaction()
         tx3.vin = [
@@ -246,12 +263,20 @@ class MyPluginPlugin(Plugin):
             make_groups([b"aab"], next_start=b"aba"),
         )
 
+        yield True
+
+        self.log.info("Step 6: Mine this third tx")
+
         # Mine tx3, groups stay the same
         block2 = self.generatetoaddress(node, 1, ADDRESS_ECREG_UNSPENDABLE)[-1]
         assert_equal(
             plugin.groups().ok(),
             make_groups([b"aaa", b"aab", b"abb", b"baa", b"bba"]),
         )
+
+        yield True
+
+        self.log.info("Step 7: Invalidate block with third tx")
 
         # Disconnect block2, groups stay the same
         node.invalidateblock(block2)
@@ -260,12 +285,18 @@ class MyPluginPlugin(Plugin):
             make_groups([b"aaa", b"aab", b"abb", b"baa", b"bba"]),
         )
 
+        yield True
+
+        self.log.info("Step 8: Invalidate block with first two txs")
         # Disconnect block1, groups stay the same
         node.invalidateblock(block1)
         assert_equal(
             plugin.groups().ok(),
             make_groups([b"aaa", b"aab", b"abb", b"baa", b"bba"]),
         )
+        yield True
+
+        self.log.info("Step 9: Create a block with more groups")
 
         # Test DB UTXO lookup limits
         last_txid = tx3.hash
@@ -301,6 +332,10 @@ class MyPluginPlugin(Plugin):
         block.solve()
         peer.send_blocks_and_test([block], node)
 
+        yield True
+
+        self.log.info("Step 10: Send a tx that spends all 'all' utxos")
+
         # Tx that spends all "all" UTXOs
         spend_all = CTransaction()
         spend_all.vin = [
@@ -317,6 +352,10 @@ class MyPluginPlugin(Plugin):
             make_groups([b"all"], next_start=b"baa"),
         )
 
+        yield True
+
+        self.log.info("Step 11: Mine the tx that spends all 'all' utxos")
+
         # If we mine the tx, we don't get group "all" anymore
         block1 = self.generatetoaddress(node, 1, ADDRESS_ECREG_UNSPENDABLE)[-1]
         assert_equal(plugin.utxos(b"all").ok(), pb.Utxos())
@@ -324,6 +363,10 @@ class MyPluginPlugin(Plugin):
             plugin.groups(start=b"all", page_size=1).ok(),
             make_groups([b"baa"], next_start=b"spent"),
         )
+
+        yield True
+
+        self.log.info("Step 12: Spend all utxos that have an integer as group")
 
         # Spend all UTXOs that have an integer as group
         spend_ints = CTransaction()
@@ -354,7 +397,8 @@ class MyPluginPlugin(Plugin):
             plugin.groups(start=(1000).to_bytes(3, "big")).ok(),
             make_groups([b"aaa", b"aab", b"abb", b"baa", b"spent"]),
         )
+        yield True
 
 
 if __name__ == "__main__":
-    ChronikPluginGroups().main()
+    ChronikClientPluginGroups().main()
