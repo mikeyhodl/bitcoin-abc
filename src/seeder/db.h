@@ -29,6 +29,11 @@ static inline int GetRequireHeight() {
     return Params().Checkpoints().mapCheckpoints.rbegin()->first;
 }
 
+static inline bool HasCheckpoint() {
+    return !Params().Checkpoints().mapCheckpoints.empty() &&
+           GetRequireHeight() > 0;
+}
+
 static inline std::string ToString(const CService &ip) {
     std::string str = ip.ToString();
     while (str.size() < 22) {
@@ -60,6 +65,16 @@ public:
     friend class SeederAddrInfo;
 };
 
+enum class ReliabilityStatus {
+    OK,
+    NOT_NODE_NETWORK,
+    NOT_ROUTABLE,
+    NOT_REQUIRED_VERSION,
+    NOT_REQUIRED_HEIGHT,
+    BAD_UPTIME,
+    UNVERIFIED_CHECKPOINT,
+};
+
 class CAddrReport {
 public:
     CService ip;
@@ -68,7 +83,7 @@ public:
     double uptime[5];
     std::string clientSubVersion;
     int64_t lastSuccess;
-    bool fGood;
+    ReliabilityStatus reliabilityStatus;
     uint64_t services;
 };
 
@@ -90,6 +105,7 @@ private:
     int total;
     int success;
     std::string clientSubVersion;
+    bool checkpointVerified;
 
 public:
     SeederAddrInfo()
@@ -108,46 +124,43 @@ public:
         ret.uptime[3] = stat1W.reliability;
         ret.uptime[4] = stat1M.reliability;
         ret.lastSuccess = ourLastSuccess;
-        ret.fGood = IsReliable();
+        ret.reliabilityStatus = GetReliabilityStatus();
         ret.services = services;
         return ret;
     }
 
     bool IsReliable() const {
+        return GetReliabilityStatus() == ReliabilityStatus::OK;
+    }
+
+    // Return the first detected reason a node is unreliable or `OK` if no
+    // reason found
+    ReliabilityStatus GetReliabilityStatus() const {
         if (!(services & NODE_NETWORK)) {
-            return false;
+            return ReliabilityStatus::NOT_NODE_NETWORK;
         }
         if (!ip.IsRoutable()) {
-            return false;
+            return ReliabilityStatus::NOT_ROUTABLE;
         }
         if (clientVersion && clientVersion < REQUIRE_VERSION) {
-            return false;
+            return ReliabilityStatus::NOT_REQUIRED_VERSION;
         }
         if (blocks && blocks < GetRequireHeight()) {
-            return false;
+            return ReliabilityStatus::NOT_REQUIRED_HEIGHT;
         }
 
-        if (total <= 3 && success * 2 >= total) {
-            return true;
+        if ((total > 3 || success * 2 < total) &&
+            (stat2H.reliability <= 0.85 || stat2H.count <= 2) &&
+            (stat8H.reliability <= 0.70 || stat8H.count <= 4) &&
+            (stat1D.reliability <= 0.55 || stat1D.count <= 8) &&
+            (stat1W.reliability <= 0.45 || stat1W.count <= 16) &&
+            (stat1M.reliability <= 0.35 || stat1M.count <= 32)) {
+            return ReliabilityStatus::BAD_UPTIME;
         }
-
-        if (stat2H.reliability > 0.85 && stat2H.count > 2) {
-            return true;
+        if (!checkpointVerified) {
+            return ReliabilityStatus::UNVERIFIED_CHECKPOINT;
         }
-        if (stat8H.reliability > 0.70 && stat8H.count > 4) {
-            return true;
-        }
-        if (stat1D.reliability > 0.55 && stat1D.count > 8) {
-            return true;
-        }
-        if (stat1W.reliability > 0.45 && stat1W.count > 16) {
-            return true;
-        }
-        if (stat1M.reliability > 0.35 && stat1M.count > 32) {
-            return true;
-        }
-
-        return false;
+        return ReliabilityStatus::OK;
     }
 
     int64_t GetBanTime() const {
@@ -200,7 +213,7 @@ public:
     friend class CAddrDb;
 
     SERIALIZE_METHODS(SeederAddrInfo, obj) {
-        uint8_t version = 4;
+        uint8_t version = 5;
         READWRITE(version, obj.ip, obj.services, obj.lastTry);
         uint8_t tried = obj.ourLastTry != 0;
         READWRITE(tried);
@@ -225,6 +238,15 @@ public:
         if (version >= 4) {
             READWRITE(obj.ourLastSuccess);
         }
+        if (version >= 5) {
+            READWRITE(obj.checkpointVerified);
+        } else {
+            // To avoid a sudden drop of all nodes when seeders upgrade,
+            // initially mark all nodes as having their checkpoints verified,
+            // to keep previously considered good nodes live until they are
+            // later proven bad
+            SER_READ(obj, obj.checkpointVerified = true);
+        }
     }
 };
 
@@ -247,6 +269,7 @@ struct CServiceResult {
     int nClientV;
     std::string strClientV;
     int64_t ourLastSuccess;
+    bool checkpointVerified;
 };
 
 /**
@@ -273,17 +296,16 @@ private:
     std::set<int> unkId;
     // set of good nodes  (d, good e)
     std::set<int> goodId;
-    int nDirty;
 
 protected:
     // internal routines that assume proper locks are acquired
     // add an address
     void Add_(const CAddress &addr, bool force);
     // get an IP to test (must call Good_ or Bad_ on result afterwards)
-    bool Get_(CServiceResult &ip, int &wait);
+    bool Get_(CServiceResult &ip);
     // mark an IP as good (must have been returned by Get_)
     void Good_(const CService &ip, int clientV, std::string clientSV,
-               int blocks, uint64_t services);
+               int blocks, uint64_t services, bool checkpointVerified);
     // mark an IP as bad (and optionally ban it) (must have been returned by
     // Get_)
     void Bad_(const CService &ip, int ban);
@@ -389,7 +411,6 @@ public:
                 }
             }
         }
-        db->nDirty++;
 
         s >> banned;
     }
@@ -406,11 +427,11 @@ public:
         }
     }
 
-    void GetMany(std::vector<CServiceResult> &ips, int max, int &wait) {
+    void GetMany(std::vector<CServiceResult> &ips, int max) {
         LOCK(cs);
         while (max > 0) {
             CServiceResult ip = {};
-            if (!Get_(ip, wait)) {
+            if (!Get_(ip)) {
                 return;
             }
             ips.push_back(ip);
@@ -423,7 +444,8 @@ public:
         for (size_t i = 0; i < ips.size(); i++) {
             if (ips[i].fGood) {
                 Good_(ips[i].service, ips[i].nClientV, ips[i].strClientV,
-                      ips[i].nHeight, ips[i].services);
+                      ips[i].nHeight, ips[i].services,
+                      ips[i].checkpointVerified);
             } else {
                 Bad_(ips[i].service, ips[i].nBanTime);
             }

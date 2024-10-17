@@ -41,11 +41,10 @@ void SeederAddrInfo::Update(bool good) {
     //  + 1.0 - stat1W.weight), stat1W.count);
 }
 
-bool CAddrDb::Get_(CServiceResult &ip, int &wait) {
+bool CAddrDb::Get_(CServiceResult &ip) {
     int64_t now = GetTime();
     size_t tot = unkId.size() + ourId.size();
     if (tot == 0) {
-        wait = 5;
         return false;
     }
 
@@ -75,7 +74,6 @@ bool CAddrDb::Get_(CServiceResult &ip, int &wait) {
         }
     } while (1);
 
-    nDirty++;
     return true;
 }
 
@@ -87,7 +85,7 @@ int CAddrDb::Lookup_(const CService &ip) {
 }
 
 void CAddrDb::Good_(const CService &addr, int clientV, std::string clientSV,
-                    int blocks, uint64_t services) {
+                    int blocks, uint64_t services, bool checkpointVerified) {
     int id = Lookup_(addr);
     if (id == -1) {
         return;
@@ -99,13 +97,13 @@ void CAddrDb::Good_(const CService &addr, int clientV, std::string clientSV,
     info.clientSubVersion = clientSV;
     info.blocks = blocks;
     info.services = services;
+    info.checkpointVerified = checkpointVerified;
     info.Update(true);
     if (info.IsReliable() && goodId.count(id) == 0) {
         goodId.insert(id);
         //    tfm::format(std::cout, "%s: good; %i good nodes now\n",
         //    ToString(addr), (int)goodId.size());
     }
-    nDirty++;
     ourId.push_back(id);
 }
 
@@ -140,7 +138,6 @@ void CAddrDb::Bad_(const CService &addr, int ban) {
         }
         ourId.push_back(id);
     }
-    nDirty++;
 }
 
 void CAddrDb::Add_(const CAddress &addr, bool force) {
@@ -186,7 +183,6 @@ void CAddrDb::Add_(const CAddress &addr, bool force) {
     //  tfm::format(std::cout, "%s: added\n", ToString(ipp),
     //  ipToId[ipp]);
     unkId.insert(id);
-    nDirty++;
 }
 
 void CAddrDb::GetIPs_(std::set<CNetAddr> &ips, uint64_t requestedFlags,

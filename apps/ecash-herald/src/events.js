@@ -9,6 +9,7 @@ const {
     getBlockTgMessage,
     getMinerFromCoinbaseTx,
     guessRejectReason,
+    summarizeTxHistory,
 } = require('./parse');
 const {
     getCoingeckoPrices,
@@ -20,6 +21,7 @@ const {
     getTokenInfoMap,
     getOutputscriptInfoMap,
     getAllBlockTxs,
+    getBlocksAgoFromChaintipByTimestamp,
 } = require('./chronik');
 const knownMinersJson = require('../constants/miners');
 
@@ -45,9 +47,6 @@ module.exports = {
         memoryCache,
         returnMocks = false,
     ) {
-        // Set to cache that this block has finalized
-        // This will call off the "Block not confirmed by avalanche" msg
-        await memoryCache.set(`${blockHeight}${blockHash}`, 'BLK_FINALIZED');
         // Get block txs
         // TODO blockTxs are paginated, need a function to get them all
         let blockTxs;
@@ -104,10 +103,99 @@ module.exports = {
             outputScriptInfoMap,
         );
 
-        // returnMocks is used in the script function generateMocks
-        // Using it as a flag here ensures the script is always using the same function
-        // as the app
+        // Send a daily summary every 24 hrs
+        // To avoid using memoryCache, we use block timestamps
+        // In this way, even when we start up the app, we can be sure we only send a daily summary
+        // when we find a block on a "new day"
+        try {
+            const lastBlockTimestamp = (await chronik.block(blockHeight - 1))
+                .blockInfo.timestamp;
+            const thisBlockTimestamp = (await chronik.block(blockHeight))
+                .blockInfo.timestamp;
+
+            // .toDateString() gives results like
+            // 'Mon Oct 14 2024'
+            // 'Tue Oct 15 2024'
+            // expects input in ms
+            const MS_PER_S = 1000;
+            const lastBlockDateString = new Date(
+                MS_PER_S * thisBlockTimestamp,
+            ).toDateString();
+
+            const thisBlockDateString = new Date(
+                MS_PER_S * lastBlockTimestamp,
+            ).toDateString();
+
+            if (lastBlockDateString !== thisBlockDateString) {
+                // It is a new day
+                // Send the daily summary
+
+                // Get a timestamp that for this new day
+                // Will always be divisible by 1000 as will always be a midnight UTC date
+                const newDayTimestamp =
+                    new Date(thisBlockDateString).getTime() / MS_PER_S;
+
+                const SECONDS_PER_DAY = 86400;
+
+                // Chaintip is probably the same as this block, but mb not at this point
+                const { startBlockheight, chaintip } =
+                    await getBlocksAgoFromChaintipByTimestamp(
+                        chronik,
+                        newDayTimestamp,
+                        SECONDS_PER_DAY,
+                    );
+
+                const getAllBlockTxPromises = [];
+                for (let i = startBlockheight; i <= chaintip; i += 1) {
+                    getAllBlockTxPromises.push(getAllBlockTxs(chronik, i));
+                }
+
+                const allBlockTxs = (
+                    await Promise.all(getAllBlockTxPromises)
+                ).flat();
+
+                // We only want txs in the specified window
+                // NB coinbase txs have timeFirstSeen of 0. We include all of them as the block
+                // timestamps are in the window
+                const timeFirstSeenTxs = allBlockTxs.filter(
+                    tx =>
+                        (tx.timeFirstSeen > newDayTimestamp - SECONDS_PER_DAY &&
+                            tx.timeFirstSeen <= newDayTimestamp) ||
+                        tx.isCoinbase,
+                );
+
+                // Get XEC price
+                let price;
+                if (typeof coingeckoPrices !== 'undefined') {
+                    price = coingeckoPrices[0].price;
+                }
+
+                const dailySummaryTgMsgs = summarizeTxHistory(
+                    newDayTimestamp,
+                    timeFirstSeenTxs,
+                    price,
+                );
+
+                // Send msg with successful price API call
+                await sendBlockSummary(
+                    dailySummaryTgMsgs,
+                    telegramBot,
+                    channelId,
+                    'daily',
+                );
+            }
+        } catch (err) {
+            console.error(
+                `Error getting timestamps for blocks ${blockHeight} and ${
+                    blockHeight - 1
+                }`,
+                err,
+            );
+        }
         if (returnMocks) {
+            // returnMocks is used in the script function generateMocks
+            // Using it as a flag here ensures the script is always using the same function
+            // as the app
             // Note you need coingeckoResponse so you can mock the axios response for coingecko
             return {
                 blockTxs,
@@ -138,65 +226,6 @@ module.exports = {
         );
     },
     /**
-     * Handle block connected event
-     * @param {object} telegramBot
-     * @param {string} channelId
-     * @param {string} blockHash
-     * @param {number} blockHeight
-     * @param {object} memoryCache
-     */
-    handleBlockConnected: async function (
-        telegramBot,
-        channelId,
-        blockHash,
-        blockHeight,
-        memoryCache,
-    ) {
-        // Set to cache that this block has connected
-        await memoryCache.set(`${blockHeight}${blockHash}`, 'BLK_CONNECTED');
-
-        await new Promise(resolve =>
-            setTimeout(resolve, config.waitForFinalizationMsecs),
-        );
-
-        const cacheStatusAfterFinalizationWait = await memoryCache.get(
-            `${blockHeight}${blockHash}`,
-        );
-
-        if (cacheStatusAfterFinalizationWait === 'BLK_FINALIZED') {
-            // If the block in finalized by now, take no action
-            return;
-        }
-
-        console.log(
-            `Block ${blockHeight} not finalized after ${
-                config.waitForFinalizationMsecs / 1000
-            }s.`,
-        );
-        // Default Telegram message if chronik API error
-        const errorTgMsg =
-            `Block connected, but not finalized by Avalanche after ${
-                config.waitForFinalizationMsecs / 1000
-            }s\n` +
-            `\n` +
-            `${blockHeight.toLocaleString('en-US')}\n` +
-            `\n` +
-            `${blockHash}`;
-
-        try {
-            return await telegramBot.sendMessage(
-                channelId,
-                errorTgMsg,
-                config.tgMsgOptions,
-            );
-        } catch (err) {
-            console.log(
-                `Error in telegramBot.sendMessage(channelId=${channelId}, msg=${errorTgMsg}, options=${config.tgMsgOptions}) called from handleBlockConnected`,
-                err,
-            );
-        }
-    },
-    /**
      * Handle block invalidated event
      * @param {ChronikClient} chronik
      * @param {object} telegramBot
@@ -217,9 +246,6 @@ module.exports = {
         coinbaseData,
         memoryCache,
     ) {
-        // Set to cache that this block was invalidated
-        await memoryCache.set(`${blockHeight}${blockHash}`, 'BLK_INVALIDATED');
-
         const miner = getMinerFromCoinbaseTx(
             coinbaseData.scriptsig,
             coinbaseData.outputs,

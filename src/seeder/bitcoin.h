@@ -49,6 +49,8 @@ private:
     NodeSeconds doneAfter{NodeSeconds{0s}};
     CService you;
     ServiceFlags yourServices{ServiceFlags(NODE_NETWORK)};
+    bool checkpointVerified{false};
+    bool needAddrReply{false};
 
     std::chrono::seconds GetTimeout() { return you.IsTor() ? 120s : 30s; }
 
@@ -82,6 +84,8 @@ public:
     int GetStartingHeight() { return nStartingHeight; }
 
     uint64_t GetServices() { return yourServices; }
+
+    bool IsCheckpointVerified() const { return checkpointVerified; }
 };
 
 #endif // BITCOIN_SEEDER_BITCOIN_H

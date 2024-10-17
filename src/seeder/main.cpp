@@ -38,13 +38,11 @@ extern "C" void *ThreadCrawler(void *data) {
     int *nThreads = (int *)data;
     do {
         std::vector<CServiceResult> ips;
-        int wait = 5;
-        db.GetMany(ips, 16, wait);
+        db.GetMany(ips, 16);
         int64_t now = GetTime();
         if (ips.empty()) {
-            wait *= 1000;
-            wait += rand() % (500 * *nThreads);
-            UninterruptibleSleep(std::chrono::milliseconds(wait));
+            UninterruptibleSleep(std::chrono::milliseconds(
+                5000 + std::rand() % (500 * *nThreads)));
             continue;
         }
 
@@ -69,6 +67,7 @@ extern "C" void *ThreadCrawler(void *data) {
                 res.strClientV = node.GetClientSubVersion();
                 res.nHeight = node.GetStartingHeight();
                 res.services = node.GetServices();
+                res.checkpointVerified = node.IsCheckpointVerified();
                 // tfm::format(std::cout, "%s: %s!!!\n", cip.ToString(),
                 // ret ? "GOOD" : "BAD");
                 res.fGood = ret;
@@ -270,11 +269,12 @@ extern "C" void *ThreadDumper(void *data) {
                     "%-47s  %4d  %11" PRId64
                     "  %6.2f%% %6.2f%% %6.2f%% %6.2f%% %6.2f%%  %6i  %08" PRIx64
                     "  %5i \"%s\"\n",
-                    rep.ip.ToString(), (int)rep.fGood, rep.lastSuccess,
-                    100.0 * rep.uptime[0], 100.0 * rep.uptime[1],
-                    100.0 * rep.uptime[2], 100.0 * rep.uptime[3],
-                    100.0 * rep.uptime[4], rep.blocks, rep.services,
-                    rep.clientVersion, rep.clientSubVersion);
+                    rep.ip.ToString(),
+                    rep.reliabilityStatus == ReliabilityStatus::OK ? 1 : 0,
+                    rep.lastSuccess, 100.0 * rep.uptime[0],
+                    100.0 * rep.uptime[1], 100.0 * rep.uptime[2],
+                    100.0 * rep.uptime[3], 100.0 * rep.uptime[4], rep.blocks,
+                    rep.services, rep.clientVersion, rep.clientSubVersion);
                 stat[0] += rep.uptime[0];
                 stat[1] += rep.uptime[1];
                 stat[2] += rep.uptime[2];

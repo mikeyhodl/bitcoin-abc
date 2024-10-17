@@ -1,11 +1,24 @@
-# Bitcoin ABC 0.30.2 Release Notes
+# Bitcoin ABC 0.30.3 Release Notes
 
-Bitcoin ABC version 0.30.2 is now available from:
+Bitcoin ABC version 0.30.3 is now available from:
 
-  <https://download.bitcoinabc.org/0.30.2/>
+  <https://download.bitcoinabc.org/0.30.3/>
 
-This release fixes a bug introduced in version 0.30.1 that affects nodes running
-with Chronik enabled. Under some rare circumstances the bug could cause Chronik
-to crash. Only node operators running Chronik (disabled by default) are
-affected. If you encountered the issue, please update your node to solve it. No
-reindex is required.
+Iguana Debugger
+---------------
+
+This release adds the Iguana debugger, a simple tool that runs the scripts of
+transactions and outputs a trace of each opcode with the current stack at each
+step. It also has a CSV option to view the trace in a spreadsheet software.
+
+You can run it like this:
+`iguana -tx=<txhex> -value=<value> -scriptpubkey=<scriptpubkey> -inputindex=0`
+
+Or run `iguana -h` to see all the options.
+
+Deprecating ARM (32 bits)
+-------------------------
+
+Starting with this release, the Bitcoin ABC ARM (32 bits) version is deprecated.
+It will no longer be delivered with the release binaries. Users that still want
+to run Bitcoin ABC on this platform should build the binary from the sources.

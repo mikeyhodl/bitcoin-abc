@@ -94,7 +94,7 @@ BOOST_AUTO_TEST_CASE(process_version_msg) {
                       versionMessage.GetVersion());
 }
 
-BOOST_AUTO_TEST_CASE(process_verack_msg) {
+BOOST_FIXTURE_TEST_CASE(process_verack_msg, MainNetSeederTestingSetup) {
     CDataStream verackMessage(SER_NETWORK, 0);
     verackMessage.SetVersion(INIT_PROTO_VERSION);
     testNode->TestProcessMessage(NetMsgType::VERACK, verackMessage,
@@ -130,7 +130,30 @@ static CDataStream CreateAddrMessage(std::vector<CAddress> sendAddrs,
     return payload;
 }
 
-BOOST_AUTO_TEST_CASE(process_addr_msg) {
+BOOST_FIXTURE_TEST_CASE(process_addr_msg, MainNetSeederTestingSetup) {
+    // First, must send headers to satisfy the criteria that both ADDR/ADDRV2
+    // *and* HEADERS must arrive before TestNode can advance to the Finished
+    // state
+    BlockHash recentCheckpoint =
+        ::Params().Checkpoints().mapCheckpoints.rbegin()->second;
+    int recentCheckpointHeight =
+        ::Params().Checkpoints().mapCheckpoints.rbegin()->first;
+    auto header = CBlockHeader{};
+    header.hashPrevBlock = recentCheckpoint;
+    testNode->setStartingHeight(recentCheckpointHeight + 1);
+    CDataStream headersMsg(SER_NETWORK, 0);
+    headersMsg.SetVersion(INIT_PROTO_VERSION);
+    WriteCompactSize(headersMsg, 1);
+    headersMsg << header;
+    // sanity check: node is expecting headers
+    BOOST_CHECK(!testNode->IsCheckpointVerified());
+    testNode->TestProcessMessage(NetMsgType::HEADERS, headersMsg,
+                                 PeerMessagingState::AwaitingMessages);
+    BOOST_CHECK_EQUAL(testNode->GetBan(), 0);
+    // node got the checkpointed header; it can advance to Finished after
+    // addr message
+    BOOST_CHECK(testNode->IsCheckpointVerified());
+
     // vAddrs starts with 1 entry.
     std::vector<CAddress> sendAddrs(ADDR_SOFT_CAP - 1, vAddr[0]);
 
@@ -216,10 +239,18 @@ BOOST_FIXTURE_TEST_CASE(good_checkpoint, MainNetSeederTestingSetup) {
     testNode->TestProcessMessage(NetMsgType::HEADERS, headersOnCorrectChain,
                                  PeerMessagingState::AwaitingMessages);
     BOOST_CHECK_EQUAL(testNode->GetBan(), 0);
+    BOOST_CHECK(testNode->IsCheckpointVerified());
+}
+
+BOOST_FIXTURE_TEST_CASE(bad_checkpoint, MainNetSeederTestingSetup) {
+    BlockHash recentCheckpoint =
+        ::Params().Checkpoints().mapCheckpoints.rbegin()->second;
+    int recentCheckpointHeight =
+        ::Params().Checkpoints().mapCheckpoints.rbegin()->first;
+    auto header = CBlockHeader{};
 
     // We just ignore HEADERS messages sent by nodes with a chaintip before our
     // most recent checkpoint.
-    header.hashPrevBlock = BlockHash{};
     testNode->setStartingHeight(recentCheckpointHeight - 1);
     CDataStream shortHeaderChain(SER_NETWORK, 0);
     shortHeaderChain.SetVersion(INIT_PROTO_VERSION);
@@ -228,10 +259,11 @@ BOOST_FIXTURE_TEST_CASE(good_checkpoint, MainNetSeederTestingSetup) {
     testNode->TestProcessMessage(NetMsgType::HEADERS, shortHeaderChain,
                                  PeerMessagingState::AwaitingMessages);
     BOOST_CHECK_EQUAL(testNode->GetBan(), 0);
+    BOOST_CHECK(!testNode->IsCheckpointVerified());
 
     // Process a HEADERS message with a first header that does not follow
     // our most recent checkpoint, check that the node is banned.
-    header.hashPrevBlock = BlockHash{};
+    BOOST_CHECK(header.hashPrevBlock != recentCheckpoint);
     testNode->setStartingHeight(recentCheckpointHeight + 1);
     CDataStream headersOnWrongChain(SER_NETWORK, 0);
     headersOnWrongChain.SetVersion(INIT_PROTO_VERSION);
@@ -240,6 +272,7 @@ BOOST_FIXTURE_TEST_CASE(good_checkpoint, MainNetSeederTestingSetup) {
     testNode->TestProcessMessage(NetMsgType::HEADERS, headersOnWrongChain,
                                  PeerMessagingState::Finished);
     BOOST_CHECK(testNode->GetBan() > 0);
+    BOOST_CHECK(!testNode->IsCheckpointVerified());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
