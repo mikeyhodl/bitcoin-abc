@@ -1,11 +1,7 @@
-# Bitcoin ABC 0.32.8 Release Notes
+# Bitcoin ABC 0.32.9 Release Notes
 
-Bitcoin ABC version 0.32.8 is now available from:
+Bitcoin ABC version 0.32.9 is now available from:
 
-  <https://download.bitcoinabc.org/0.32.8/>
+  <https://download.bitcoinabc.org/0.32.9/>
 
-This release includes the following features and fixes:
- - The `availability_score` field has been removed from the `getpeerinfo` and
-   `getavalanchepeerinfo` RPCs. This was deprecated since v0.30.12 and is now
-   completely removed.
-
+This is a maintenance release with no user-visible change.
