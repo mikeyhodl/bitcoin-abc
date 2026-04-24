@@ -7217,6 +7217,8 @@ void PeerManagerImpl::ProcessMessage(
 
                             m_recent_rejects.insert(txid);
 
+                            AddToCompactExtraTransactions(tx);
+
                             CCoinsViewMemPool coinViewMempool(
                                 &m_chainman.ActiveChainstate().CoinsTip(),
                                 m_mempool);
@@ -7370,6 +7372,8 @@ void PeerManagerImpl::ProcessMessage(
                                     {txid, now});
                             }
                         }
+
+                        AddToCompactExtraTransactions(tx);
 
                         break;
                     }
